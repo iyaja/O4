@@ -1,0 +1,8 @@
+torch==1.10.0+cu113
+compiler_gym==0.2.1
+wandb
+pytorch_lightning
+transformers
+fastai
+datasets
+-f https://download.pytorch.org/whl/cu113/torch_stable.html

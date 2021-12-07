@@ -1,0 +1,13 @@
+name: O4
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - ca-certificates
+  - certifi
+  - openssl
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cudatoolkit=11.3
+prefix: /home/iyaja/miniconda3/envs/O4
