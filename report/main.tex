@@ -32,8 +32,8 @@
 \pagenumbering{arabic}
 
 %%%%%%%%%%%---SETME-----%%%%%%%%%%%%%
-\title{Guidelines for Submission to ISCA 2021} 
-\author{}
+\title{O4: Learning a Dynamic Phase Ordering Policy} 
+\author{Ajay Uppili Arasanipalai}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \begin{document}
@@ -47,276 +47,291 @@
 
 \begin{abstract}
 
-Phase ordering, the task of choosing and ordering code transformations from a set of semantics-preserving passes, is an important problem in  of  is an important classical method . We present a new method for
-generating a phase ordering dynamically at compile-time using  . Our learned cost model is able to predict the instruction count reduction factor with 9.
+  Phase ordering, the task of choosing and ordering code transformations from a
+  set of semantics-preserving passes, is an important problem for optimizing
+  compilers. The ordering of passes can have a significant impact on key
+  performance metrics for the generated code, such as instruction count, run
+  time, and build time.
 
-This document is intended to serve as a sample for submissions to the 48th
-IEEE/ACM International Symposium on Computer Architecture (ISCA), May 22--26,
-2021 in Valencia, Spain. This document provides guidelines that authors should
-follow when submitting papers to the conference.  This format is derived from
-the IEEE conference template IEEEtran.cls file with the objective of keeping the
-submission similar to the final version, i.e., the IEEEtran.cls template will
-also be used for the camera-ready version.
+  In this work, we propose a dynamic phase ordering policy based on a learned
+  cost model for LLVM passes. Our learned cost model is able to predict code
+  size reduction with a 9.5\% error rate. We show that our cost model can be
+  used to generate phase ordering policy that outperforms LLVM's built-in
+  \texttt{-Oz} policy.
+
+  Code and pretrained models can be found at \url{https://github.com/iyaja/O4}.
 
 \end{abstract}
 
 \section{Introduction}
 
-This document provides instructions for submitting papers to ISCA 2021.  In an
-effort to respect the efforts of reviewers and in the interest of fairness to
-all prospective authors, we request that all submissions to ISCA 2021 follow the
-formatting and submission rules detailed below. Submissions that violate these
-instructions may not be reviewed, at the discretion of the program chair, in
-order to maintain a review process that is fair to all potential authors. This
-document is itself formatted using the ISCA 2021 submission format. The content
-of this document mirrors that of the submission instructions that appear on the
-conference website. All questions regarding paper formatting and submission
-should be directed to the program chair.
+The LLVM \cite{lattner2004llvm} compiler framework has become a widely
+successful and popular tool for building optimizing compilers by abtracting away
+the front-end and back-end to enable powerful language-agnostic tools to be
+built over LLVM intermediate representation (IR).
 
-\subsection{Format Highlights}
+Among the most useful tools in LLVM is \texttt{opt}, an optimization engine
+that transforms LLVM IR code by applying a set of transformations called passes,
+such as dead code elimination, constant propagation, and loop unrolling. These
+passes can, in general, be ordered arbitrarily, and the order of the passes can
+have a significant impact on the performance of the generated code. There are
+many phase ordering a classically challenging problem.
 
-Here are the format highlights in a nutshell:
-\begin{itemize}
-\item Paper must be submitted in printable PDF format.
-\item Text must be in a minimum 10pt Times font, see Table~\ref{table:formatting}.
-\item Papers must be at most 11 pages (not including references) in a
-  two-column format.
-\item No page limit for references.
-\item Each reference must specify {\em all} authors, i.e., no {\em et al.}
-\end{itemize}
+\textbf{Complex Complier Internals.} LLVM passes can be complex. Some involve
+many thousands of lines of C++ code designed by human experts with complex
+heuristics. Designing a good phase ordering policy involves not only
+understanding how each of these passes work, but also how specifically on the IR
+to be optimized.
 
-\subsection{Paper Evaluation Objectives} 
-The committee will make every effort to judge each submitted paper on its own
-merits. There will be no target acceptance rate. We expect to accept a wide
-range of papers with appropriate expectations for evaluation --- while papers
-that build on significant past work with strong evaluations are valuable, papers
-that open new areas with less rigorous evaluation are equally welcome and
-especially encouraged. We also acknowledge the wide range of evaluation
-methodologies in ISCA including modeling, simulation, prototyping, experimental
-implementation, real product evaluation, etc. 
+\textbf{Large Search Space.} The search space of all possible optimization
+pipelines is very large (arguably infinite). For a pipeline with \(n\) phases
+and \(m\) passes, the search space is \(O(n^m)\) - exponential in the number of
+phases. Furthermore, there is no hard limit to the total number of phases that
+can be used in a pipeline, but there is a point of diminishing returns. Applying
+more passes does not nessecarily improve performance, and can sometimes even
+hurt it. Furthermore, using more passes also increases build time, meaning a
+complex pipeline that improves performance but has too many passes may be
+unprofitable. A good policy must be able to balance the trade-off between
+performance metrics and build time.
 
-\section{Paper Preparation Instructions}
+\textbf{Interdependancies Between Passes} While phase ordering can be modeled as
+a sequential decision making process, passes in LLVM serve various purposes and
+can have complex interdependencies. For example, while some passes may not have
+an immediate or appreciable effect on the generated code, they may enable other
+passes to be applied or work more effectively.
 
-\subsection{Paper Formatting}
-Papers must be submitted in printable PDF format and should contain a
-{\em maximum of 11 pages} of single-spaced two-column text, {\bf not
-  including references}.  You may include any number of pages for
-references, but see below for more instructions.  If you are using
-\LaTeX~\cite{lamport94} to typeset your paper, then we suggest that
-you use the template used to prepare this document, which you can find
-on the ISCA 2021 website. If you use a different
-software package to typeset your paper, then please adhere to the
-guidelines given in Table~\ref{table:formatting}.  
+Currently, LLVM implements a collection of "good default" optimization policies,
+such as \texttt{-O0} (no optimization), \texttt{-O1} (some level of runtime
+reduction with quick builds), \texttt{-Os} (codesize reduction), \texttt{-Oz}
+(aggresive codesize reduction), and \texttt{-O3} (aggresive runtime reduction).
+This is by far the most common approach for optimizing compilers.
+
+Additionally, LLVM's built-in optimization pipelines are static - they apply the
+same set of passes to all IR. This is potentially suboptimal, as certain
+optimizations may be more or less effective on certain code patterns. However,
+designing a dynamic phase ordering policy is sufficiently complex that it is not
+feasible write manually. LLVM's default pipelines have been emperically shown to
+work well across a wide range of code patterns, and we argue that this reliance
+on experimental data naturally suggests that a learning-based search method
+might be more effective.
+
+\section{Method}
+
+In this work, we focus on the problem of choosing a dynamic phase ordering that
+minimizes codesize. Here, we present our proposed method for building and
+training O4 (collectively referring to both a cost model and the phase ordering
+policy). Our approach can be broken down into three steps:
+
+\begin{enumerate}
+  \item Train a cost model to predict instruction count.
+  \item Train a classifier to predict the optimal pass to apply to current IR,
+        using the cost model as a loss function.
+  \item Run the trained policy recursively on the desired IR, applying passes
+        sequentially after each forward step.
+\end{enumerate}
+
+The following sections decribe each of these steps in more detail.
+
+\subsection{Training a Cost Model}
+
+The first component of O4 is a cost model that predicts the effect of applying a
+given optimization from LLVM's predefined set of 124 passes exposed in Compiler
+Gym \cite{CompilerGym}.
+
+We use a transformer-based architecure for the cost model. More details are
+provided in \ref{sec:neural_network}.
+
+We use the LLVM IR instruction count as a target metric. While it is not a
+measure of true codesize reduction, as it does not take into account the effects
+of lowering, it is fast to evaluate, deterministic, and platform-independent.
+Additionally, IR instruction count is the default reward metric used in Compiler
+Gym \cite{CompilerGym}, enabling us to draw a fair comparison with similar
+methods that have been evaluated on the same dataset and benchmarks.
+
+
+The approach is summarized in \ref{fig:training_cost_model}.
+
+\label{fig:training_cost_model}
+\begin{figure}
+  \centering
+  \includegraphics[scale=0.3]{figures/training_1.pdf}
+  \caption{\textbf{Training the cost model.}}
+\end{figure}
+
+The cost model is trained using a supervised learning. Since the true reward
+(instruction count after applying an optimization pass to IR) is known at
+training time, we simply train the cost model to minimize the mean squared error
+between the true reward and the predicted reward.
+
+The differentiable cost model learns predict the result of applying a given
+transformation to a given IR. The cost model takes the raw LLVM IR as input and
+predicts the desired reward metric, as shown in \ref{fig:training_cost_model}.
+
+The groud truth reward signal, which the cost model attempts to approximate, is
+the reduction in instruction count relative to LLVM's built-in \texttt{-Oz}
+pipeline:
+
+\[ R = \frac{IC_{o0} - IC_{o \sim \mathcal{U}(A)}}{IC_{o0} - IC_{oz}} \]
+
+Where \(IC_p\) is the LLVM IR instruction count of the program after applyng
+optimization pipeline \(p\) (obtained using the \texttt{IrInstructionCount}
+observation space in Compiler Gym).
+
+\subsection{Training a Policy Network}
+
+Once the cost model has been trained, we can use it to train a classifier that
+predicts which optimization pass to apply to a given IR. The optimization
+prediction network takes the raw LLVM IR as input and predicts which one among
+the 124 passes should be applied. Then, the cost model is used as a supervision
+signal to train the network to improve it's predictions.
+
+Since the cost model is a differentiable function, we can backpropagate through
+it and treat it as a loss function, with the learning objecttive of the policy
+network being to minimize the estimated instruction count from the cost model.
+
+This second training step is summarized in \ref{fig:training_policy_network}.
+
+\label{fig:training_policy_network}
+\begin{figure}
+  \centering
+  \includegraphics[scale=0.3]{figures/training_2.pdf}
+  \caption{\textbf{Training the policy network.}}
+\end{figure}
+
+\subsection{Generating a Phase Ordering}
+
+With both models trained, the final step is to generate a dynamic phase
+ordering. This is done by applying the policy network to the raw LLVM IR
+recurrently - apply the optimization predicted by the policy network, and then
+pass the transformed IR back into the network to predict the next optimization.
+This process repeated recurrently until the desired target performace is
+reached.
+
+As shown in \ref{fig:inference}, the only model required at compile time is a
+single copy of the optimization predictor. The cost model can be discarded once
+optimization predictor as been trained and does not need to be integrated into
+the compiler, unlike in other machine learning methods. This simple functional
+interface makes it easy to integrate O4 into existing compiler frameworks
+without rewriting pass managers to use the cost model directly.
+
+\label{fig:inference}
+\begin{figure}
+  \centering
+  \includegraphics[scale=0.3]{figures/inference.pdf}
+  \caption{\textbf{Generating a phase ordering.}}
+\end{figure}
+
+\section{Implementation}
+
+Next, we describe the implementation and training details of O4. Code is
+available in at \url{https://github.com/iyaja/O4}.
+
+\subsection{Inputs and Data}
+
+We train our models using a representative subset of datasets built into
+Compiler Gym \cite{CompilerGym}. Specifically, we use a combination of programs
+from the NASA parallel benchmark suite \cite{bailey1995parallel} and cBench
+\cite{fursin2009collective}. Unfortunately, due to the use of this custom subset
+of small programs and limited compute resources, we cannot make a fair
+comparison with current approaches on the Compiler Gym leaderboards.
+
+The datasets are exposed as raw human-readable LLVM IR in Compiler Gym, and we
+use a custom tokenizer based on WordPiece \cite{devlin2018bert} and Inst2vec
+\cite{ben2018neural} for our preprocessing pipeline. We train the WordPiece
+tokenizer on our dataset that is first normalized and preprocessed by Inst2vec
+\cite{ben2018neural}. We do \textbf{not} use the embeddings or tokens from
+Inst2vec, and instead build a custom fast tokenizer to work with the Huggingface
+Transformers library \cite{wolf2019huggingface} and retrain the RoBERTa's
+embedding layer instead of using Inst2vec's fixed 200-dimensional vectors.
+
+Where possible, the tokenizer learns to group entire instructions into a single
+token. This enables us to pack many more instructions into an input sequence
+than a conventionally trained Byte-Pair Encoding (BPE) tokenizer, which is
+especially important for models like RoBERTa, which have an input sequence
+length limit of 512 tokens. Since the model is trained to predict instruction
+count, not including all instructions can be problematic, since the model would
+have no sense of how long the full IR is. Future work could investiage
+augmenting the raw IR with additional metadata to circumvent this limitation.
+
+For the cost model, the current pass to be applied on the is prepended as a
+special token to the input sequence, For the policy network, the tokenized
+instructions are passed directly to the transformer.
+
+\label{sec:neural_network}
+\subsection{Neural Networks}
+
+We use RoBERTa \cite{liu2019roberta}, a popular variant of the BERT
+\cite{devlin2018bert} transformer model  as our base architecture for both the
+cost model and the policy network. We initialize it from the CodeBERT
+\cite{feng2020codebert} checkpoint and leave architecure exploration for future
+work, acknowleding that there is potentially scope for more complex model that
+use , such as Programl embeddings \cite{cummins2020programl} with graph neural
+networks to extract more semantic information from the IR.
+
+CodeBERT \cite{feng2020codebert} is a large language model pretrained on a large
+dataset of code snippets in high level languages, such as Java and Go. While
+this is not representative of our target domain (LLVM IR), we reasoned that it
+would be better than initializing our cost model from random weights and
+pretraining a new language model from scratch. While pretraining a language
+model on raw LLVM IR is bound to be a more effective, this approach was
+prohibitively expensive, and we leave it for future work.
+
+Both the cost model and the policy network are implemented using the Huggingface
+Transformers library \cite{wolf2019huggingface}. Pretrained models and are
+available on the Huggingface model hub \footnote{Pretrained models and
+  tokenizers are availabe at https://huggingface.co/iyaja/O4}.
+
+\section{Results}
+
+Our current results are summarized in \ref{table:results}. Of main interest is
+the error rate of the cost model - the best model, trained on 1000 samples of
+cBench \cite{fursin2009collective}, is able to predict the relative instruction
+count reduction with an error rate of 11.4\% (root mean-squared error).
 
 \begin{scriptsize}
-\begin{table}[h!]
-  \centering
-  \caption{Formatting guidelines for submission.}
-  \label{table:formatting}
-  \begin{tabular}{|l|l|}
-    \hline
-    \textbf{Field} & \textbf{Value}\\
-    \hline
-    \hline
-    File format & PDF \\
-    \hline
-    Page limit & 11 pages, {\bf not including}\\
-               & {\bf references}\\
-    \hline
-    Paper size & US Letter 8.5in $\times$ 11in\\
-    \hline
-    Top margin & 1in\\
-    \hline
-    Bottom margin & 1in\\
-    \hline
-    Left margin & 0.75in\\
-    \hline
-    Right margin & 0.75in\\
-    \hline
-    Body & 2-column, single-spaced\\
-    \hline
-    Space between columns & 0.25in\\
-    \hline
-    Line spacing (leading) & 11pt \\
-    \hline
-    Body font & 10pt, Times\\
-    \hline
-    Abstract font & 10pt, Times\\
-    \hline
-    Section heading font & 12pt, bold\\
-    \hline
-    Subsection heading font & 10pt, bold\\
-    \hline
-    Caption font & 9pt (minimum), bold\\
-    \hline
-    References & 8pt, no page limit, list \\
-               & all authors' names\\
-    \hline
-  \end{tabular}
-\end{table}
+  \begin{table}[h!]
+    \begin{center}
+      \caption{Summary of results.}
+      \label{table:results}
+      \begin{tabular}{|l|l|l|l|l|}
+        \hline
+        \textbf{Dataset} & \textbf{\begin{tabular}[c]{@{}l@{}}Unique \\
+            Programs\end{tabular}} & \textbf{Samples} & \textbf{Passes} &
+        \textbf{MSE}                                                                                     \\ \hline
+        cbench-v0        & 23                                     & 100              & 5
+                         & 0.031                                                                         \\ \hline
+        cbench-v0        & 23                                     & 500              & 10
+                         & 0.019                                                                         \\ \hline
+        cbench-v0        & 23                                     & 1000             & 20              &
+        \textbf{0.013}                                                                                   \\ \hline
+        npb-v0           & 122                                    & 64               & 32
+                         & -                                                                             \\ \hline
+      \end{tabular}
+    \end{center}
+  \end{table}
 \end{scriptsize}
 
-{\em Please ensure that you include page numbers with your
-  submission}. This makes it easier for the reviewers to refer to
-different parts of your paper when they provide comments. Please
-ensure that your submission has a banner at the top of the title page,
-similar to this document, which contains the submission number and the
-notice of confidentiality.  If using the template, just replace `NaN'
-with your submission number. 
-
-\subsection{Content}
-Reviewing will be {\em double blind} (no author list); therefore,
-please do not include any author names on any submitted documents
-except in the space provided on the submission form.  You must also
-ensure that the metadata included in the PDF does not give away the
-authors. If you are improving upon your prior work, refer to your
-prior work in the third person and include a full citation for the
-work in the bibliography.  For example, if you are building on {\em
-  your own} prior work in the
-papers~\cite{nicepaper1,nicepaper2,nicepaper3}, you would say
-something like: "While the authors of~\cite{nicepaper1,nicepaper2,nicepaper3} did X,
-Y, and Z, this paper additionally does W, and is therefore much
-better."  Do NOT omit or anonymize references for blind review.  There
-is one exception to this for your own prior work that appeared in IEEE
-CAL, arXiv, workshops without archived proceedings, etc.\ as
-discussed later in this document. 
-
-\noindent\textbf{Figures and Tables:} Ensure that the figures and
-tables are legible.  Please also ensure that you refer to your figures
-in the main text.  Many reviewers print the papers in
-gray-scale. Therefore, if you use colors for your figures, ensure that
-the different colors are highly distinguishable in gray-scale. 
-
-\noindent\textbf{References:}  There is no length limit for
-references. {\em Each reference must explicitly list all authors of
-  the paper.  Papers not meeting this requirement will be rejected.}
-Since there is no length limit for the number of pages
-used for references, there is no need to save space here. 
+Unfortunately, the policy network network, as trained on the best cost model, is
+unable to reach the performance of random search. We hope to iterate on this
+model an improve it's performance in future work.
 
 
-\section{Paper Submission Instructions}
+\section{Conclusion}
 
-\subsection{Guidelines for Determining Authorship}
-IEEE guidelines dictate that authorship should be based on a {\em
-  substantial intellectual contribution}. It is assumed that all
-authors have had a significant role in the creation of an article that
-bears their names. In particular, the authorship credit must be
-reserved only for individuals who have met each of the following
-conditions: 
+Phase ordering is an import yet complex classic compiler problem that can have a
+significant impact on key performance metrics for the generated code. Our
+proposed method, O4, uses a learned cost model to generate a dynamic phase
+ordering policy. While our generated phase orderings do not outperform LLVM's
+built-in \texttt{-Oz} policy on average, they demonstrate that a learned policy
+for phase ordering, with more training data and time, can be effective.
 
-\begin{enumerate}
-\item Made a significant intellectual contribution to the theoretical
-  development, system or experimental design, prototype development,
-  and/or the analysis and interpretation of data associated with the
-  work contained in the article; 
+Furthermore, our approach learns and adapts and scales with more data, which
+opens the door to phase ordering policies finetuned for specific domains,
+architecures, and applications.
 
-\item Contributed to drafting the article or reviewing and/or revising
-  it for intellectual content; and 
-
-\item Approved the final version of the article as accepted for publication, including references.
-\end{enumerate}
-
-A detailed description of the IEEE authorship guidelines and
-responsibilities is available online.\footnote{\url{https://www.ieee.org/publications_standards/publications/rights/Section821.html}} Per
-these guidelines, it is not acceptable to award {\em honorary}
-authorship or {\em gift} authorship. Please keep these guidelines in
-mind while determining the author list of your paper. 
-
-\subsection{Declaring Authors}
-Declare all the authors of the paper upfront. Addition/removal of
-authors once the paper is accepted will have to be approved by the
-program chair, since it potentially undermines the goal of eliminating
-conflicts for reviewer assignment. 
-
-\subsection{Areas and Topics}
-Authors should indicate specific topics covered by the paper on the
-submission page. If you are unsure whether your paper falls within the
-scope of ISCA, please check with the program chair --- ISCA is a broad,
-multidisciplinary conference and encourages new topics. 
-
-\subsection{Declaring Conflicts of Interest}
-
-Authors must register all their conflicts on the paper submission
-site. Conflicts are needed to ensure appropriate assignment of
-reviewers. If a paper is found to have an undeclared conflict that
-causes a problem OR if a paper is found to declare false conflicts in
-order to abuse or `game' the review system, the paper may be rejected. 
-
-Please declare a conflict of interest with the following people for any author of your paper.
-A conflict occurs in the following cases:
-\begin{enumerate}
-\item Between advisor and advisee forever. 
-\item Between family members forever. 
-\item Between people who have collaborated in the last 5 years. This
-  collaboration can consist of a joint research or development
-  project, a joint paper, or when there is direct funding from the
-  potential reviewer (as opposed to company funding) to an author of
-  the paper. Co-participation in professional activities, such as
-  tutorials or studies, is not cause for conflict. When in doubt, the
-  author should check with the Program Chair. 
-\item Between people from same institution or who were in the same
-  institution in the last 5 years.  
-\item Between people whose relationship prevents the reviewer from
-  being objective in his/her assessment. 
-\end{enumerate}
-
-`Service' collaborations, such as co-authoring a report for a
-professional organization, serving on a program committee, or
-co-presenting tutorials, do not themselves create a conflict of
-interest. Co-authoring a paper that is a compendium of various
-projects with no true collaboration among the projects does not
-constitute a conflict among the authors of the different projects. On
-the other hand, there may be others not covered by the above with whom
-you believe a COI exists, for example, an ongoing collaboration which
-has not yet resulted in the creation of a paper or proposal. Please
-report such COIs; however, you may be asked to justify them. Please be
-reasonable. For example, you cannot declare a COI with a reviewer just
-because that reviewer works on topics similar to or related to those
-in your paper.  The program chair may contact co-authors to explain a COI
-whose origin is unclear. 
-
-Most reviews will be solicited among the members of the PC and the ERC, but other
-members from the community may also write reviews. Please declare all
-your conflicts (not just restricted to the PC and ERC) on the
-submission form. When in doubt, contact the program chair. 
-
-
-\subsection{Concurrent Submissions and Workshops}
-By submitting a manuscript to ISCA 2021, the authors guarantee that
-the manuscript has not been previously published or accepted for
-publication in a substantially similar form in any conference,
-journal, or the archived proceedings of a workshop (e.g., in the
-ACM/IEEE digital libraries) --- see exceptions below. The authors also
-guarantee that no paper that contains significant overlap with the
-contributions of the submitted paper will be under review for any
-other conference or journal or an archived proceedings of a workshop
-during the ISCA 2021 review period. Violation of any of these
-conditions will lead to rejection. 
-
-The only exceptions to the above rules are for the authors' own papers
-in (1) workshops without archived proceedings such as in the ACM/IEEE
-digital libraries (or where the authors chose not to have their paper
-appear in the archived proceedings), or (2) venues such as IEEE CAL or
-arXiv where there is an explicit policy that such publication does not
-preclude longer conference submissions.  In all such cases, the
-submitted manuscript may ignore the above work to preserve author
-anonymity. This information must, however, be provided on the
-submission form --- the program chair will make this information available
-to reviewers if it becomes necessary to ensure a fair review.  
-If you have already put your manuscript on arXiv, in the interest of 
-double blind review, modify the title for the version you submit to ISCA.
-As always, if you are in doubt, it is best to contact program chairs. 
-
-
-Finally, the ACM/IEEE Plagiarism Policies\footnote{\url{http://www.acm.org/publications/policies/plagiarism_policy}\\
-\url{https://www.ieee.org/publications_standards/publications/rights/plagiarism_FAQ.html}}
-cover a range of ethical issues concerning the misrepresentation of
-other works or one's own work. 
-
-
-\section*{Acknowledgements}
-This document is derived from previous conferences, in particular ISCA
-2019, MICRO 2019, ISCA 2020, and MICRO 2020.
+% \section*{Acknowledgements}
+% This document is derived from previous conferences, in particular ISCA
+% 2019, MICRO 2019, ISCA 2020, and MICRO 2020.
 
 %%%%%%% -- PAPER CONTENT ENDS -- %%%%%%%%
 
