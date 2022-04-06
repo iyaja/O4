@@ -1,5 +1,5 @@
 torch==1.10.0+cu113
-compiler_gym==0.2.1
+compiler_gym==0.2.2
 wandb
 pytorch_lightning
 transformers
